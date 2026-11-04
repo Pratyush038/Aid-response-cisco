@@ -1,294 +1,219 @@
-import { useMemo, useRef, useState } from "react";
-import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
-import { Html, Line, OrbitControls } from "@react-three/drei";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, type ThreeEvent } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
+import { Physics } from "@react-three/rapier";
 import * as THREE from "three";
 import { Link } from "wouter";
-import {
-  BODY_HEIGHT,
-  GATEWAY_ID,
-  MAST_HEIGHT,
-  SOURCE_DEFAULT,
-  VR_LINKS,
-  VR_NODES,
-  buildScenery,
-  initialDeadNodes,
-  terrainHeight,
-  towerTop,
-  type VrNodeSpec,
-} from "@/vr/data";
-import { computeRoute, describeChange, nodeName } from "@/vr/mesh";
+import { SOURCE_DEFAULT, VR_NODES, buildBuildings, initialDeadNodes, type BuildingSpec } from "@/vr/data";
+import { computeRoute, describeChange, nodeName, type ExtraLink } from "@/vr/mesh";
+import { DEFAULT_SETTINGS, SLOWMO_SCALE, type SimSettings } from "@/vr/settings";
+import type { DronePhase, RelayPair } from "@/vr/drone";
+import { playAlert, playCollapse, playImpact, setSoundEnabled, unlockAudio, vibrate } from "@/vr/audio";
+import { Terrain } from "@/vr/scene/Terrain";
+import { Links, Packets } from "@/vr/scene/Links";
+import { NodeLabels, SourceRing } from "@/vr/scene/Labels";
+import { DroneActor } from "@/vr/scene/DroneActor";
+import { DestructionLayer, type SimApi } from "@/vr/scene/DestructionLayer";
 
-type Mode = "source" | "destroy";
+type Mode = "destroy" | "source" | "shoot";
 
 const GOLD = "#C8A97E";
-const TEAL = "#3fb8af";
-const RED = "#c2453d";
+const PANEL = { background: "rgba(17,17,16,0.85)", border: "1px solid rgba(255,255,255,0.1)" };
 
-// ---------------------------------------------------------------- terrain
-
-function Terrain() {
-  const geometry = useMemo(() => {
-    const g = new THREE.PlaneGeometry(90, 90, 90, 90);
-    g.rotateX(-Math.PI / 2);
-    const pos = g.attributes.position as THREE.BufferAttribute;
-    for (let i = 0; i < pos.count; i++) {
-      pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
-    }
-    g.computeVertexNormals();
-    return g;
-  }, []);
-
-  return (
-    <mesh geometry={geometry}>
-      <meshStandardMaterial color="#2b3a2f" flatShading />
-    </mesh>
-  );
-}
-
-function Scenery() {
-  const blocks = useMemo(() => buildScenery(), []);
-  return (
-    <>
-      {blocks.map((b, i) => (
-        <mesh
-          key={i}
-          position={[b.x, terrainHeight(b.x, b.z) + b.h / 2, b.z]}
-        >
-          <boxGeometry args={[b.w, b.h, b.d]} />
-          <meshStandardMaterial color="#6d6a63" />
-        </mesh>
-      ))}
-    </>
-  );
-}
-
-// ------------------------------------------------------------------ nodes
-
-interface NodeTowerProps {
-  spec: VrNodeSpec;
-  dead: boolean;
-  isSource: boolean;
-  onSelect: () => void;
-}
-
-function NodeTower({ spec, dead, isSource, onSelect }: NodeTowerProps) {
-  const base = terrainHeight(spec.x, spec.z);
-  const isGateway = spec.nodeId === GATEWAY_ID;
-
-  const bodyColor = dead ? "#4a2523" : isGateway ? "#2f6f73" : "#b8b4aa";
-  const lampColor = dead ? RED : isGateway ? "#4ff0e4" : "#6cf08a";
-
-  function handleClick(e: ThreeEvent<MouseEvent>) {
-    e.stopPropagation();
-    onSelect();
-  }
-
-  return (
-    <group
-      position={[spec.x, base, spec.z]}
-      onClick={handleClick}
-      onPointerOver={(e) => {
-        e.stopPropagation();
-        document.body.style.cursor = "pointer";
-      }}
-      onPointerOut={() => {
-        document.body.style.cursor = "auto";
-      }}
-    >
-      {/* Building body. A destroyed node is shown squashed and tilted. */}
-      <mesh
-        position={[0, dead ? 0.55 : BODY_HEIGHT / 2, 0]}
-        scale={[1, dead ? 0.35 : 1, 1]}
-        rotation={[0, 0, dead ? 0.18 : 0]}
-      >
-        <boxGeometry args={[2.2, BODY_HEIGHT, 2.2]} />
-        <meshStandardMaterial color={bodyColor} />
-      </mesh>
-
-      {!dead && (
-        <>
-          {/* Antenna mast */}
-          <mesh position={[0, BODY_HEIGHT + MAST_HEIGHT / 2, 0]}>
-            <cylinderGeometry args={[0.08, 0.12, MAST_HEIGHT, 8]} />
-            <meshStandardMaterial color="#d7d3c8" />
-          </mesh>
-          {/* Lamp at the top, where links attach */}
-          <mesh position={[0, BODY_HEIGHT + MAST_HEIGHT, 0]}>
-            <sphereGeometry args={[0.38, 16, 16]} />
-            <meshStandardMaterial
-              color={lampColor}
-              emissive={lampColor}
-              emissiveIntensity={1.2}
-            />
-          </mesh>
-        </>
-      )}
-
-      {/* Gold ring marks the current SOS source */}
-      {isSource && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.08, 0]}>
-          <ringGeometry args={[2.4, 2.9, 48]} />
-          <meshBasicMaterial color={GOLD} side={THREE.DoubleSide} />
-        </mesh>
-      )}
-
-      <Html position={[0, BODY_HEIGHT + MAST_HEIGHT + 1.4, 0]} center distanceFactor={34}>
-        <div
-          className="pointer-events-none whitespace-nowrap rounded px-1.5 py-0.5 text-[11px]"
-          style={{
-            background: "rgba(17,17,16,0.75)",
-            color: dead ? "#e58b84" : "#e8e4da",
-            border: `1px solid ${isSource ? GOLD : "rgba(255,255,255,0.12)"}`,
-          }}
-        >
-          {spec.name}
-        </div>
-      </Html>
-    </group>
-  );
-}
-
-// ------------------------------------------------------------------ links
-
-function Links({ path, dead }: { path: string[]; dead: ReadonlySet<string> }) {
-  const onPath = useMemo(() => {
-    const s = new Set<string>();
-    for (let i = 0; i < path.length - 1; i++) {
-      s.add(`${path[i]}|${path[i + 1]}`);
-      s.add(`${path[i + 1]}|${path[i]}`);
-    }
-    return s;
-  }, [path]);
-
-  const specs = useMemo(() => {
-    const m = new Map<string, VrNodeSpec>();
-    VR_NODES.forEach((n) => m.set(n.nodeId, n));
-    return m;
-  }, []);
-
-  return (
-    <>
-      {VR_LINKS.map((l) => {
-        const a = specs.get(l.from)!;
-        const b = specs.get(l.to)!;
-        const usable = !dead.has(l.from) && !dead.has(l.to);
-        const highlighted = usable && onPath.has(`${l.from}|${l.to}`);
-        return (
-          <Line
-            key={`${l.from}-${l.to}`}
-            points={[towerTop(a), towerTop(b)]}
-            color={highlighted ? GOLD : usable ? TEAL : RED}
-            lineWidth={highlighted ? 3.5 : 1.2}
-            dashed={!usable}
-            dashSize={0.6}
-            gapSize={0.6}
-            transparent
-            opacity={highlighted ? 1 : usable ? 0.55 : 0.25}
-          />
-        );
-      })}
-    </>
-  );
-}
-
-/** Small spheres that travel along the active route. */
-function Packets({ path }: { path: string[] }) {
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
-
-  const { points, cumulative, total } = useMemo(() => {
-    const pts = path.map((id) => {
-      const spec = VR_NODES.find((n) => n.nodeId === id)!;
-      return new THREE.Vector3(...towerTop(spec));
-    });
-    const cum = [0];
-    for (let i = 1; i < pts.length; i++) {
-      cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
-    }
-    return { points: pts, cumulative: cum, total: cum[cum.length - 1] };
-  }, [path]);
-
-  useFrame(({ clock }) => {
-    if (points.length < 2 || total === 0) return;
-    const speed = 9; // world units per second
-    refs.current.forEach((mesh, i) => {
-      if (!mesh) return;
-      const d = (clock.elapsedTime * speed + (i * total) / 4) % total;
-      let s = 1;
-      while (s < cumulative.length - 1 && cumulative[s] < d) s++;
-      const segLen = cumulative[s] - cumulative[s - 1] || 1;
-      const t = (d - cumulative[s - 1]) / segLen;
-      mesh.position.lerpVectors(points[s - 1], points[s], t);
-    });
-  });
-
-  if (points.length < 2) return null;
-  return (
-    <>
-      {[0, 1, 2, 3].map((i) => (
-        <mesh
-          key={i}
-          ref={(el) => {
-            refs.current[i] = el;
-          }}
-        >
-          <sphereGeometry args={[0.45, 12, 12]} />
-          <meshBasicMaterial color="#ffd58a" />
-        </mesh>
-      ))}
-    </>
-  );
-}
-
-// ------------------------------------------------------------------- page
+/** Link cost used for a drone relay (km and ms, same units as the seed links). */
+const DRONE_LINK = { distance: 2.0, latency: 60 };
 
 export default function VrSimulation() {
   const [dead, setDead] = useState<Set<string>>(() => initialDeadNodes());
   const [source, setSource] = useState<string>(SOURCE_DEFAULT);
   const [mode, setMode] = useState<Mode>("destroy");
+  const [blocked, setBlocked] = useState<Set<string>>(() => new Set());
+  const [droneLink, setDroneLink] = useState<RelayPair | null>(null);
+  const [dronePhase, setDronePhase] = useState<DronePhase>("patrol");
+  const [droneOn, setDroneOn] = useState(true);
+  const [quaking, setQuaking] = useState(false);
+  const [slowMo, setSlowMo] = useState(false);
+  const [gravity, setGravity] = useState(DEFAULT_SETTINGS.gravity);
+  const [intensity, setIntensity] = useState(DEFAULT_SETTINGS.quakeIntensity);
+  const [sound, setSound] = useState(true);
   const [log, setLog] = useState<string[]>([
-    "Click a tower to destroy it and watch the mesh reroute.",
+    "Click a building to demolish it, or use Earthquake / Shoot.",
   ]);
 
-  const route = useMemo(() => computeRoute(source, dead), [source, dead]);
+  // ---- refs mirroring state, for callbacks that outlive a render ----------
+  const settings = useRef<SimSettings>({ ...DEFAULT_SETTINGS });
+  const apiRef = useRef<SimApi | null>(null);
+  const shakeGroup = useRef<THREE.Group>(null);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const quakeStats = useRef({ scenery: 0, landmarks: 0 });
+  const lastSound = useRef(0);
+
+  const extra: ExtraLink[] = useMemo(
+    () => (droneLink ? [{ from: droneLink.a, to: droneLink.b, ...DRONE_LINK }] : []),
+    [droneLink],
+  );
+  const route = useMemo(
+    () => computeRoute(source, dead, blocked, extra),
+    [source, dead, blocked, extra],
+  );
   const path = route?.path ?? [];
 
-  function pushLog(line: string) {
-    setLog((prev) => [line, ...prev].slice(0, 6));
-  }
+  const pushLog = useCallback((line: string) => {
+    setLog((prev) => [line, ...prev].slice(0, 7));
+  }, []);
 
-  function handleSelect(nodeId: string) {
-    if (mode === "source") {
-      if (dead.has(nodeId)) {
-        pushLog(`${nodeName(nodeId)} is down and cannot be a source.`);
+  // ---- route change detection: log it, and raise the alarm on loss --------
+  const prevRoute = useRef<{ source: string; route: typeof route }>({ source, route });
+  useEffect(() => {
+    const prev = prevRoute.current;
+    prevRoute.current = { source, route };
+    if (prev.source !== source) return;
+    const sig = (r: typeof route) => (r ? r.path.join(">") : "none");
+    if (sig(prev.route) === sig(route)) return;
+    pushLog(describeChange(prev.route, route));
+    if (prev.route && !route) {
+      playAlert();
+      vibrate([200, 100, 200, 100, 400]);
+    }
+  }, [route, source, pushLog]);
+
+  // ---- slider / toggle plumbing -------------------------------------------
+  useEffect(() => {
+    settings.current.gravity = gravity;
+  }, [gravity]);
+  useEffect(() => {
+    settings.current.quakeIntensity = intensity;
+  }, [intensity]);
+  useEffect(() => {
+    settings.current.timeScale = slowMo ? SLOWMO_SCALE : 1;
+  }, [slowMo]);
+  useEffect(() => {
+    setSoundEnabled(sound);
+  }, [sound]);
+
+  // ---- events coming from the physics scene -------------------------------
+  const handleCollapse = useCallback(
+    (spec: BuildingSpec) => {
+      const now = performance.now();
+      if (now - lastSound.current > 250) {
+        lastSound.current = now;
+        playCollapse(spec.kind === "scenery" ? 0.45 : 0.8);
+        vibrate([80, 40, 160]);
+      }
+      if (spec.nodeId) {
+        setDead((prev) => (prev.has(spec.nodeId!) ? prev : new Set(prev).add(spec.nodeId!)));
+        pushLog(`${nodeName(spec.nodeId)} tower collapsed. Node is down.`);
+      } else if (apiRef.current?.isQuaking()) {
+        // During a quake dozens of buildings fall; summarise instead of spamming.
+        if (spec.kind === "landmark") quakeStats.current.landmarks++;
+        else quakeStats.current.scenery++;
+      } else {
+        pushLog(spec.kind === "landmark" ? "A tall building collapsed." : "A building collapsed.");
+      }
+    },
+    [pushLog],
+  );
+
+  const handleQuakeChange = useCallback(
+    (active: boolean) => {
+      setQuaking(active);
+      if (!active) {
+        const { scenery, landmarks } = quakeStats.current;
+        quakeStats.current = { scenery: 0, landmarks: 0 };
+        if (scenery + landmarks > 0) {
+          pushLog(`Earthquake over: ${landmarks} tall and ${scenery} other buildings fell.`);
+        }
+      }
+    },
+    [pushLog],
+  );
+
+  const handleImpact = useCallback(() => playImpact(), []);
+
+  const handleDronePhase = useCallback(
+    (phase: DronePhase, pair: RelayPair | null) => {
+      setDronePhase(phase);
+      if (phase === "relay" && pair) {
+        pushLog(`Drone relaying between ${nodeName(pair.a)} and ${nodeName(pair.b)}.`);
+      }
+    },
+    [pushLog],
+  );
+
+  // ---- clicks in the 3D scene ---------------------------------------------
+  function handleWorldClick(e: ThreeEvent<MouseEvent>) {
+    e.stopPropagation();
+    unlockAudio();
+    const api = apiRef.current;
+    if (!api) return;
+
+    if (modeRef.current === "shoot") {
+      // Start slightly in front of the ray origin so the ball never spawns inside a mesh.
+      const dir = e.ray.direction.clone().normalize();
+      const origin = e.ray.origin.clone().addScaledVector(dir, 1.5);
+      api.shoot(origin, e.point.clone());
+      return;
+    }
+
+    const id = e.object.userData?.buildingId as string | undefined;
+    const spec = id ? buildBuildings().find((b) => b.id === id) : undefined;
+    if (!spec) return;
+
+    if (modeRef.current === "source") {
+      if (!spec.nodeId) return;
+      if (dead.has(spec.nodeId)) {
+        pushLog(`${nodeName(spec.nodeId)} is down and cannot be a source.`);
         return;
       }
-      setSource(nodeId);
-      const r = computeRoute(nodeId, dead);
+      setSource(spec.nodeId);
+      const r = computeRoute(spec.nodeId, dead, blocked, extra);
       pushLog(
         r
-          ? `Source set to ${nodeName(nodeId)}: ${r.hops} hops to the gateway.`
-          : `Source set to ${nodeName(nodeId)}: no route to the gateway.`,
+          ? `Source set to ${nodeName(spec.nodeId)}: ${r.hops} hops to the gateway.`
+          : `Source set to ${nodeName(spec.nodeId)}: no route to the gateway.`,
       );
       return;
     }
 
-    const before = computeRoute(source, dead);
-    const next = new Set(dead);
-    const wasDead = next.has(nodeId);
-    if (wasDead) next.delete(nodeId);
-    else next.add(nodeId);
-    const after = computeRoute(source, next);
-    setDead(next);
-    pushLog(
-      `${nodeName(nodeId)} ${wasDead ? "restored" : "destroyed"}. ${describeChange(before, after)}`,
-    );
+    // destroy / restore
+    const result = api.toggleBuilding(spec.id);
+    if (result === "rebuilt") {
+      if (spec.nodeId) {
+        setDead((prev) => {
+          const next = new Set(prev);
+          next.delete(spec.nodeId!);
+          return next;
+        });
+        pushLog(`${nodeName(spec.nodeId)} restored.`);
+      } else {
+        pushLog("Building rebuilt.");
+      }
+    }
+    // "demolished" is reported through handleCollapse
+  }
+
+  function startQuake() {
+    unlockAudio();
+    if (apiRef.current?.isQuaking()) return;
+    quakeStats.current = { scenery: 0, landmarks: 0 };
+    apiRef.current?.startQuake();
+    pushLog("Earthquake started.");
   }
 
   function reset() {
+    apiRef.current?.resetAll();
     setDead(initialDeadNodes());
     setSource(SOURCE_DEFAULT);
+    setBlocked(new Set());
     setLog(["Scene reset."]);
   }
+
+  const modeLabel: Record<Mode, string> = {
+    destroy: "Destroy / restore",
+    source: "Set SOS source",
+    shoot: "Shoot",
+  };
 
   return (
     <div className="relative h-screen w-screen" style={{ background: "#111110" }}>
@@ -298,19 +223,38 @@ export default function VrSimulation() {
         <ambientLight intensity={0.55} />
         <directionalLight position={[30, 50, 20]} intensity={1.1} />
 
-        <Terrain />
-        <Scenery />
-        <Links path={path} dead={dead} />
-        <Packets path={path} />
-        {VR_NODES.map((spec) => (
-          <NodeTower
-            key={spec.nodeId}
-            spec={spec}
-            dead={dead.has(spec.nodeId)}
-            isSource={spec.nodeId === source}
-            onSelect={() => handleSelect(spec.nodeId)}
-          />
-        ))}
+        {/* Everything that shakes during a quake lives in this group. */}
+        <group ref={shakeGroup} onClick={handleWorldClick}>
+          <Terrain />
+          <Suspense fallback={null}>
+            {/* paused: we step the world ourselves (see DestructionLayer) */}
+            <Physics paused gravity={[0, -DEFAULT_SETTINGS.gravity, 0]}>
+              <DestructionLayer
+                settings={settings}
+                dead={dead}
+                shakeGroup={shakeGroup}
+                apiRef={apiRef}
+                onCollapse={handleCollapse}
+                onBlockedChange={setBlocked}
+                onQuakeChange={handleQuakeChange}
+                onImpact={handleImpact}
+              />
+            </Physics>
+          </Suspense>
+          <Links path={path} dead={dead} blocked={blocked} />
+          <Packets path={path} />
+          <SourceRing source={source} />
+          <NodeLabels dead={dead} source={source} />
+        </group>
+
+        <DroneActor
+          dead={dead}
+          blocked={blocked}
+          settings={settings}
+          enabled={droneOn}
+          onLink={setDroneLink}
+          onPhase={handleDronePhase}
+        />
 
         <OrbitControls
           target={[0, 0, 0]}
@@ -323,15 +267,12 @@ export default function VrSimulation() {
       {/* HUD */}
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4 text-sm text-[#e8e4da]">
         <div className="flex items-start justify-between gap-4">
-          <div
-            className="pointer-events-auto rounded-md p-3"
-            style={{ background: "rgba(17,17,16,0.85)", border: "1px solid rgba(255,255,255,0.1)" }}
-          >
+          <div className="pointer-events-auto rounded-md p-3" style={PANEL}>
             <div className="mb-2 text-base font-medium" style={{ color: GOLD }}>
               ResQNet 3D Mesh Simulator
             </div>
-            <div className="flex gap-2">
-              {(["destroy", "source"] as Mode[]).map((m) => (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {(Object.keys(modeLabel) as Mode[]).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}
@@ -341,39 +282,85 @@ export default function VrSimulation() {
                     color: mode === m ? GOLD : "#e8e4da",
                   }}
                 >
-                  {m === "destroy" ? "Destroy / restore" : "Set SOS source"}
+                  {modeLabel[m]}
                 </button>
               ))}
+            </div>
+            <div className="mb-2 flex flex-wrap gap-2">
               <button
-                onClick={reset}
+                onClick={startQuake}
+                disabled={quaking}
                 className="rounded border px-2 py-1"
-                style={{ borderColor: "rgba(255,255,255,0.2)" }}
+                style={{ borderColor: "#c2453d", color: quaking ? "#7a5a56" : "#e58b84" }}
               >
+                {quaking ? "Shaking..." : "Earthquake"}
+              </button>
+              <button
+                onClick={() => setSlowMo((v) => !v)}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: slowMo ? GOLD : "rgba(255,255,255,0.2)", color: slowMo ? GOLD : undefined }}
+              >
+                Slow motion
+              </button>
+              <button
+                onClick={() => setDroneOn((v) => !v)}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: droneOn ? GOLD : "rgba(255,255,255,0.2)", color: droneOn ? GOLD : undefined }}
+              >
+                Relay drone
+              </button>
+              <button
+                onClick={() => {
+                  unlockAudio();
+                  setSound((v) => !v);
+                }}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: sound ? GOLD : "rgba(255,255,255,0.2)", color: sound ? GOLD : undefined }}
+              >
+                Sound {sound ? "on" : "off"}
+              </button>
+              <button onClick={reset} className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 Reset
               </button>
-              <Link
-                href="/simulation"
-                className="rounded border px-2 py-1"
-                style={{ borderColor: "rgba(255,255,255,0.2)" }}
-              >
+              <Link href="/simulation" className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 2D view
               </Link>
             </div>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="w-24 opacity-80">Gravity {gravity.toFixed(1)}</span>
+              <input
+                type="range"
+                min={1}
+                max={30}
+                step={0.1}
+                value={gravity}
+                onChange={(e) => setGravity(Number(e.target.value))}
+              />
+              <button className="underline opacity-70" onClick={() => setGravity(9.81)}>
+                Earth
+              </button>
+            </label>
+            <label className="mt-1 flex items-center gap-2 text-xs">
+              <span className="w-24 opacity-80">Quake {intensity.toFixed(1)}</span>
+              <input
+                type="range"
+                min={0.5}
+                max={2.5}
+                step={0.1}
+                value={intensity}
+                onChange={(e) => setIntensity(Number(e.target.value))}
+              />
+            </label>
           </div>
 
-          <div
-            className="pointer-events-auto w-80 rounded-md p-3"
-            style={{ background: "rgba(17,17,16,0.85)", border: "1px solid rgba(255,255,255,0.1)" }}
-          >
+          <div className="pointer-events-auto w-80 rounded-md p-3" style={PANEL}>
             <div className="mb-1 font-medium" style={{ color: GOLD }}>
               SOS route
             </div>
             <div className="text-xs opacity-80">From: {nodeName(source)}</div>
             {route ? (
               <>
-                <div className="mt-1 text-xs">
-                  {route.path.map(nodeName).join("  >  ")}
-                </div>
+                <div className="mt-1 text-xs">{route.path.map(nodeName).join("  >  ")}</div>
                 <div className="mt-1 text-xs opacity-80">
                   {route.hops} hops, cost {route.totalDistance.toFixed(1)}
                 </div>
@@ -383,13 +370,17 @@ export default function VrSimulation() {
                 No route to the gateway. This node is cut off.
               </div>
             )}
+            <div className="mt-2 text-xs opacity-80">
+              Blocked links: {blocked.size} | Drone: {droneOn ? dronePhase : "off"}
+              {droneLink ? ` (${nodeName(droneLink.a)} - ${nodeName(droneLink.b)})` : ""}
+            </div>
+            <div className="mt-1 text-xs opacity-60">
+              Nodes alive: {VR_NODES.length - dead.size} / {VR_NODES.length}
+            </div>
           </div>
         </div>
 
-        <div
-          className="pointer-events-auto max-w-xl rounded-md p-3"
-          style={{ background: "rgba(17,17,16,0.85)", border: "1px solid rgba(255,255,255,0.1)" }}
-        >
+        <div className="pointer-events-auto max-w-xl rounded-md p-3" style={PANEL}>
           <div className="mb-1 font-medium" style={{ color: GOLD }}>
             Event log
           </div>

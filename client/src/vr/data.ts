@@ -80,21 +80,46 @@ export function initialDeadNodes(): Set<string> {
 
 /**
  * Gentle rolling terrain. Pure function of (x, z) so the terrain mesh, the
- * node towers and the scenery all agree on the ground height.
+ * node towers, the buildings and the physics ground all agree on the height.
+ *
+ * The amplitude is deliberately small: buildings are rigid, pre-fractured
+ * blocks, so a strongly sloped ground would make their footings float or
+ * penetrate the ground collider. See baseHeight() and GROUND_OFFSET below.
  */
 export function terrainHeight(x: number, z: number): number {
   return (
-    1.1 * Math.sin(x * 0.09) * Math.cos(z * 0.08) +
-    0.5 * Math.sin(x * 0.21 + z * 0.17)
+    0.4 * Math.sin(x * 0.09) * Math.cos(z * 0.08) +
+    0.18 * Math.sin(x * 0.21 + z * 0.17)
   );
 }
 
 export const BODY_HEIGHT = 3;
 export const MAST_HEIGHT = 3;
 
+/**
+ * The physics ground is the visual terrain lowered by this amount. Building
+ * footings sit at the HIGHEST ground point under their footprint, so with this
+ * margin a footing never penetrates the physics ground (penetration would make
+ * the ground joints fight the contact solver). The small gap under the lower
+ * corners is hidden by a visual foundation slab.
+ */
+export const GROUND_OFFSET = 0.3;
+
 /** World position of the top of a node's antenna mast (where links attach). */
 export function towerTop(spec: VrNodeSpec): [number, number, number] {
-  return [spec.x, terrainHeight(spec.x, spec.z) + BODY_HEIGHT + MAST_HEIGHT, spec.z];
+  const base = baseHeight(spec.x, spec.z, 2.2, 2.2);
+  return [spec.x, base + BODY_HEIGHT + MAST_HEIGHT, spec.z];
+}
+
+/** Highest terrain point under a w x d footprint centred on (x, z). */
+export function baseHeight(x: number, z: number, w: number, d: number): number {
+  let h = terrainHeight(x, z);
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      h = Math.max(h, terrainHeight(x + (sx * w) / 2, z + (sz * d) / 2));
+    }
+  }
+  return h;
 }
 
 /** Small deterministic PRNG so scenery is identical on every load. */
@@ -109,30 +134,117 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-export interface SceneryBlock {
+export type BuildingKind = "tower" | "landmark" | "scenery";
+
+/**
+ * A building is a box footprint split into an nx x ny x nz grid of blocks.
+ * The split is fixed here, at data time: there is no runtime fracturing.
+ */
+export interface BuildingSpec {
+  id: string;
+  kind: BuildingKind;
+  /** Set for node towers; collapsing such a building kills the node. */
+  nodeId?: string;
   x: number;
   z: number;
   w: number;
   d: number;
   h: number;
+  nx: number;
+  ny: number;
+  nz: number;
 }
 
-/** Background buildings around each node. Pure decoration in Stage 1. */
-export function buildScenery(): SceneryBlock[] {
-  const blocks: SceneryBlock[] = [];
+/**
+ * Tall buildings placed on the middle of three links. Their top is above the
+ * height of the antennas, so the line of sight of those links is blocked until
+ * the building falls down. This is what makes "collapse a building" able to
+ * RESTORE a link as well as to break one.
+ */
+const LANDMARKS: { x: number; z: number }[] = [
+  { x: 26.5, z: 2 }, // banashankari - jayanagar
+  { x: 1.5, z: -11.5 }, // nandini-layout - vijayanagar
+  { x: -19, z: 19.5 }, // mysore-road - kengeri
+];
+
+function overlaps(a: BuildingSpec, b: BuildingSpec, margin: number): boolean {
+  return (
+    Math.abs(a.x - b.x) < (a.w + b.w) / 2 + margin &&
+    Math.abs(a.z - b.z) < (a.d + b.d) / 2 + margin
+  );
+}
+
+let cachedBuildings: BuildingSpec[] | null = null;
+
+/** Every building in the scene: node towers, landmarks, then scenery. */
+export function buildBuildings(): BuildingSpec[] {
+  if (cachedBuildings) return cachedBuildings;
+  const out: BuildingSpec[] = [];
+
+  // Node towers first so nothing else can be placed on top of them.
+  for (const n of VR_NODES) {
+    out.push({
+      id: `tower-${n.nodeId}`,
+      kind: "tower",
+      nodeId: n.nodeId,
+      x: n.x,
+      z: n.z,
+      w: 2.2,
+      d: 2.2,
+      h: BODY_HEIGHT,
+      nx: 2,
+      ny: 3,
+      nz: 2,
+    });
+  }
+
+  LANDMARKS.forEach((l, i) =>
+    out.push({
+      id: `landmark-${i}`,
+      kind: "landmark",
+      x: l.x,
+      z: l.z,
+      w: 2.4,
+      d: 2.4,
+      h: 12,
+      nx: 2,
+      ny: 8,
+      nz: 2,
+    }),
+  );
+
+  // Scenery: random but seeded. A candidate that would overlap an existing
+  // building is rejected, because overlapping rigid bodies at t=0 would be
+  // pushed apart violently by the physics engine.
   VR_NODES.forEach((node, i) => {
     const rand = mulberry32(1000 + i);
     for (let k = 0; k < 5; k++) {
-      const angle = rand() * Math.PI * 2;
-      const radius = 3.5 + rand() * 3.5;
-      blocks.push({
-        x: node.x + Math.cos(angle) * radius,
-        z: node.z + Math.sin(angle) * radius,
-        w: 1.2 + rand() * 1.6,
-        d: 1.2 + rand() * 1.6,
-        h: 1.5 + rand() * 3.5,
-      });
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const angle = rand() * Math.PI * 2;
+        const radius = 3.5 + rand() * 3.5;
+        const w = 1.4 + rand() * 1.4;
+        const d = 1.4 + rand() * 1.4;
+        const h = 2 + rand() * 3.4;
+        const cand: BuildingSpec = {
+          id: `scenery-${i}-${k}`,
+          kind: "scenery",
+          x: node.x + Math.cos(angle) * radius,
+          z: node.z + Math.sin(angle) * radius,
+          w,
+          d,
+          h,
+          nx: 2,
+          ny: Math.max(2, Math.round(h / 1.3)),
+          nz: 2,
+        };
+        if (!out.some((o) => overlaps(cand, o, 0.6))) {
+          out.push(cand);
+          break;
+        }
+      }
     }
   });
-  return blocks;
+
+  cachedBuildings = out;
+  return out;
 }

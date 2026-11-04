@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -28,12 +28,16 @@ function Router() {
 }
 
 function App() {
+  // The floating chatbot is a DOM overlay; it would cover the 3D scene and is
+  // meaningless inside a VR headset, so it is hidden on the /vr route.
+  const [location] = useLocation();
+  const showChatbot = !location.startsWith("/vr");
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
         <Router />
-        <Chatbot />
+        {showChatbot && <Chatbot />}
       </TooltipProvider>
     </QueryClientProvider>
   );
