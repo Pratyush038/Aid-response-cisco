@@ -18,6 +18,11 @@ export interface SimApi {
   /** Demolish an intact building, or rebuild a collapsed one. */
   toggleBuilding(buildingId: string): "demolished" | "rebuilt";
   resetAll(): void;
+  /** Force-demolish a building unless it is already down. */
+  demolish(buildingId: string): void;
+  rebuild(buildingId: string): void;
+  /** Ids of buildings that have collapsed. */
+  collapsedIds(): string[];
 }
 
 interface Props {
@@ -108,6 +113,15 @@ export function DestructionLayer(props: Props) {
         sim.demolish(b);
         return "demolished";
       },
+      demolish(id) {
+        const b = sim.getBuilding(id);
+        if (b && !b.collapsed) sim.demolish(b);
+      },
+      rebuild(id) {
+        const b = sim.getBuilding(id);
+        if (b) sim.rebuild(b);
+      },
+      collapsedIds: () => sim.buildings.filter((b) => b.collapsed).map((b) => b.spec.id),
       resetAll() {
         quake.current = { active: false, t: 0 };
         live.current.onQuakeChange(false);

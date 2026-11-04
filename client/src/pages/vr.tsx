@@ -19,6 +19,7 @@ import { CardboardRig } from "@/vr/scene/CardboardRig";
 import { TeleportTarget, VrRig } from "@/vr/scene/VrRig";
 import type { HudModel } from "@/vr/scene/WorldHud";
 import { requestGyroPermission } from "@/vr/gyro";
+import { sendSync, subscribeSync, type SyncMessage } from "@/vr/sync";
 
 type Mode = "destroy" | "source" | "shoot";
 /** desktop = mouse and orbit camera; cardboard = phone stereo view with gyroscope. */
@@ -41,6 +42,7 @@ export default function VrSimulation() {
   const [droneLink, setDroneLink] = useState<RelayPair | null>(null);
   const [dronePhase, setDronePhase] = useState<DronePhase>("patrol");
   const [droneOn, setDroneOn] = useState(true);
+  const [syncOn, setSyncOn] = useState(false);
   const [quaking, setQuaking] = useState(false);
   const [slowMo, setSlowMo] = useState(false);
   const [gravity, setGravity] = useState(DEFAULT_SETTINGS.gravity);
@@ -73,6 +75,12 @@ export default function VrSimulation() {
   const shakeGroup = useRef<THREE.Group>(null);
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const deadRef = useRef(dead);
+  deadRef.current = dead;
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const droneRef = useRef(droneOn);
+  droneRef.current = droneOn;
   const quakeStats = useRef({ scenery: 0, landmarks: 0 });
   const lastSound = useRef(0);
 
@@ -120,8 +128,11 @@ export default function VrSimulation() {
   }, [sound]);
 
   // ---- events coming from the physics scene -------------------------------
+  const applyingRemote = useRef(false);
   const handleCollapse = useCallback(
     (spec: BuildingSpec) => {
+      // Tell the other devices (unless this collapse was itself ordered by one).
+      if (!applyingRemote.current) sendSync({ type: "collapse", id: spec.id });
       const now = performance.now();
       if (now - lastSound.current > 250) {
         lastSound.current = now;
@@ -180,6 +191,7 @@ export default function VrSimulation() {
       const dir = e.ray.direction.clone().normalize();
       const origin = e.ray.origin.clone().addScaledVector(dir, 1.5);
       api.shoot(origin, e.point.clone());
+      sendSync({ type: "shoot", origin: origin.toArray(), target: e.point.toArray() });
       return;
     }
 
@@ -198,6 +210,7 @@ export default function VrSimulation() {
         return;
       }
       setSource(spec.nodeId);
+      sendSync({ type: "source", nodeId: spec.nodeId });
       const r = computeRoute(spec.nodeId, dead, blocked, extra);
       pushLog(
         r
@@ -210,6 +223,7 @@ export default function VrSimulation() {
     // destroy / restore
     const result = api.toggleBuilding(spec.id);
     if (result === "rebuilt") {
+      sendSync({ type: "rebuild", id: spec.id });
       if (spec.nodeId) {
         setDead((prev) => {
           const next = new Set(prev);
@@ -224,15 +238,17 @@ export default function VrSimulation() {
     // "demolished" is reported through handleCollapse
   }
 
-  function startQuake() {
+  function startQuake(broadcast = true) {
     unlockAudio();
     if (apiRef.current?.isQuaking()) return;
     quakeStats.current = { scenery: 0, landmarks: 0 };
     apiRef.current?.startQuake();
+    if (broadcast) sendSync({ type: "quake" });
     pushLog("Earthquake started.");
   }
 
-  function reset() {
+  function reset(broadcast = true) {
+    if (broadcast) sendSync({ type: "reset" });
     apiRef.current?.resetAll();
     setDead(initialDeadNodes());
     setSource(SOURCE_DEFAULT);
@@ -270,6 +286,115 @@ export default function VrSimulation() {
 
   const immersive = inVr || view === "cardboard";
 
+  // ---- multi-device sync (see vr/sync.ts) -----------------------------------
+  // Settings (gravity, quake strength, slow motion, drone) are sent whenever
+  // they differ from what the other devices last told us.
+  const lastSynced = useRef({
+    gravity: DEFAULT_SETTINGS.gravity,
+    intensity: DEFAULT_SETTINGS.quakeIntensity,
+    slowMo: false,
+    droneOn: true,
+  });
+  useEffect(() => {
+    const cur = { gravity, intensity, slowMo, droneOn };
+    const last = lastSynced.current;
+    if (cur.gravity !== last.gravity || cur.intensity !== last.intensity || cur.slowMo !== last.slowMo || cur.droneOn !== last.droneOn) {
+      lastSynced.current = cur;
+      sendSync({ type: "settings", ...cur });
+    }
+  }, [gravity, intensity, slowMo, droneOn]);
+
+  // Latest handler, so the subscription below never goes stale.
+  const onRemote = useRef<(m: SyncMessage) => void>(() => {});
+  onRemote.current = (m) => {
+    const api = apiRef.current;
+    if (!api) return;
+    const remote = (fn: () => void) => {
+      applyingRemote.current = true;
+      try {
+        fn();
+      } finally {
+        applyingRemote.current = false;
+      }
+    };
+    const applySettings = (v: SyncMessage) => {
+      if (v.gravity === undefined) return;
+      lastSynced.current = { gravity: v.gravity, intensity: v.intensity!, slowMo: !!v.slowMo, droneOn: !!v.droneOn };
+      setGravity(v.gravity);
+      setIntensity(v.intensity!);
+      setSlowMo(!!v.slowMo);
+      setDroneOn(!!v.droneOn);
+    };
+    switch (m.type) {
+      case "hello":
+        sendSync({
+          type: "state",
+          ids: api.collapsedIds(),
+          dead: Array.from(deadRef.current),
+          nodeId: sourceRef.current,
+          gravity: settings.current.gravity,
+          intensity: settings.current.quakeIntensity,
+          slowMo: settings.current.timeScale < 1,
+          droneOn: droneRef.current,
+        });
+        break;
+      case "state":
+        remote(() => (m.ids ?? []).forEach((id) => api.demolish(id)));
+        if (m.dead) setDead(new Set(m.dead));
+        if (m.nodeId) setSource(m.nodeId);
+        applySettings(m);
+        pushLog("Synced with the other device.");
+        break;
+      case "collapse":
+        if (m.id) remote(() => api.demolish(m.id!));
+        break;
+      case "rebuild":
+        if (m.id) {
+          api.rebuild(m.id);
+          const spec = buildBuildings().find((b) => b.id === m.id);
+          if (spec?.nodeId) {
+            setDead((prev) => {
+              const next = new Set(prev);
+              next.delete(spec.nodeId!);
+              return next;
+            });
+            pushLog(`${nodeName(spec.nodeId)} restored (other device).`);
+          }
+        }
+        break;
+      case "shoot":
+        if (m.origin && m.target) api.shoot(new THREE.Vector3(...m.origin), new THREE.Vector3(...m.target));
+        break;
+      case "quake":
+        startQuake(false);
+        break;
+      case "reset":
+        reset(false);
+        break;
+      case "source":
+        if (m.nodeId) setSource(m.nodeId);
+        break;
+      case "settings":
+        applySettings(m);
+        break;
+    }
+  };
+
+  useEffect(() => {
+    const off = subscribeSync((m) => onRemote.current(m), setSyncOn);
+    // Ask the other devices for their state once the physics world is ready.
+    const timer = setInterval(() => {
+      if (apiRef.current) {
+        clearInterval(timer);
+        sendSync({ type: "hello" });
+      }
+    }, 500);
+    return () => {
+      clearInterval(timer);
+      off();
+    };
+  }, []);
+
   const hud: HudModel = {
     mode,
     quaking,
@@ -289,7 +414,7 @@ export default function VrSimulation() {
     logLines: log,
     on: {
       mode: setMode,
-      quake: startQuake,
+      quake: () => startQuake(),
       slowMo: () => setSlowMo((v) => !v),
       drone: () => setDroneOn((v) => !v),
       gravity: (d) => setGravity((g) => Math.min(30, Math.max(1, Math.round((g + d) * 10) / 10))),
@@ -298,7 +423,7 @@ export default function VrSimulation() {
         unlockAudio();
         setSound((v) => !v);
       },
-      reset,
+      reset: () => reset(),
       exit: () => {
         if (view === "cardboard") exitCardboard();
         else void xrStore.getState().session?.end();
@@ -332,6 +457,7 @@ export default function VrSimulation() {
           new THREE.Vector3(t.x + 16, 6, t.z + 10),
           new THREE.Vector3(t.x, 1.5, t.z),
         );
+        sendSync({ type: "shoot", origin: [t.x + 16, 6, t.z + 10], target: [t.x, 1.5, t.z] });
         await new Promise((r) => setTimeout(r, 900));
       }
     }
@@ -472,7 +598,7 @@ export default function VrSimulation() {
             </div>
             <div className="mb-2 flex flex-wrap gap-2">
               <button
-                onClick={startQuake}
+                onClick={() => startQuake()}
                 disabled={quaking}
                 className="rounded border px-2 py-1"
                 style={{ borderColor: "#c2453d", color: quaking ? "#7a5a56" : "#e58b84" }}
@@ -503,7 +629,7 @@ export default function VrSimulation() {
               >
                 Sound {sound ? "on" : "off"}
               </button>
-              <button onClick={reset} className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
+              <button onClick={() => reset()} className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 Reset
               </button>
               <button
@@ -581,6 +707,9 @@ export default function VrSimulation() {
             </div>
             <div className="mt-1 text-xs opacity-60">
               Nodes alive: {VR_NODES.length - dead.size} / {VR_NODES.length}
+            </div>
+            <div className="mt-1 text-xs" style={{ color: syncOn ? "#6cf08a" : "#e58b84" }}>
+              Multi-device sync: {syncOn ? "connected" : "offline"}
             </div>
           </div>
         </div>

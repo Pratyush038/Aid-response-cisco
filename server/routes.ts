@@ -8,6 +8,7 @@ import { getMerakiTelemetry, rebootMerakiGateway } from "./meraki";
 import { groqChatHandler, generateSosAnalysis } from "./ai";
 import { setupAuth } from "./auth";
 import { sseHandler, broadcastEvent } from "./events";
+import { registerVrSync } from "./vr-sync";
 import { findMeshPath } from "@shared/routing";
 
 const nodeStatusSchema = z.object({
@@ -388,6 +389,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Server-Sent Events stream — instant SOS alerts on all connected clients
   app.get("/api/events", sseHandler);
+  registerVrSync(app);
 
   // Mock Cisco Cloud webhook — simulates the Meraki gateway pushing an alert
   // from the offline mesh to the Cisco Cloud (Webex + Meraki IoT Dashboard).
