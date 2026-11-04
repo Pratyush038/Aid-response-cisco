@@ -69,7 +69,10 @@ export function DestructionLayer(props: Props) {
         );
         live.current.onCollapse(b.spec);
       },
-      onImpact: (speed) => live.current.onImpact(speed),
+      onImpact: (speed, point) => {
+        dust.current?.burst(point, 14);
+        live.current.onImpact(speed);
+      },
     };
     setSim(d);
     return () => d.dispose();

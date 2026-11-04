@@ -13,6 +13,7 @@ import { playAlert, playCollapse, playImpact, setSoundEnabled, unlockAudio, vibr
 import { Terrain } from "@/vr/scene/Terrain";
 import { Links, Packets } from "@/vr/scene/Links";
 import { NodeLabels, SourceRing } from "@/vr/scene/Labels";
+import { Roads, Trees } from "@/vr/scene/Decor";
 import { DroneActor } from "@/vr/scene/DroneActor";
 import { DestructionLayer, type SimApi } from "@/vr/scene/DestructionLayer";
 import { CardboardRig } from "@/vr/scene/CardboardRig";
@@ -508,6 +509,8 @@ export default function VrSimulation() {
           <TeleportTarget onTeleport={(p) => setViewpoint([p.x, p.z])}>
             <Terrain />
           </TeleportTarget>
+          <Roads />
+          <Trees />
           <Suspense fallback={null}>
             {/* paused: we step the world ourselves (see DestructionLayer) */}
             <Physics paused gravity={[0, -DEFAULT_SETTINGS.gravity, 0]}>

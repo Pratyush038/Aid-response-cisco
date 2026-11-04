@@ -137,7 +137,7 @@ export interface DestructionCallbacks {
   onCollapse?: (b: Building) => void;
   onJointsBroken?: (count: number) => void;
   /** Called for impacts that damaged a building; `speed` is the relative speed. */
-  onImpact?: (speed: number) => void;
+  onImpact?: (speed: number, point: THREE.Vector3) => void;
 }
 
 function isBall(x: Block | Ball): x is Ball {
@@ -572,6 +572,17 @@ export class Destruction {
       new THREE.MeshStandardMaterial({ color: "#ffb347", emissive: "#ff7a00", emissiveIntensity: 0.6 }),
     );
     mesh.position.copy(origin);
+    const dot = softDot();
+    if (dot) {
+      // glowing halo so the ball is easy to follow in flight
+      const halo = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: dot, color: "#ff9a3c", blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }),
+      );
+      halo.scale.set(3, 3, 1);
+      halo.raycast = () => null;
+      mesh.add(halo);
+    }
+    mesh.castShadow = true;
     this.group.add(mesh);
     const ball: Ball = { body, collider, mesh, mass: body.mass(), age: 0 };
     this.balls.push(ball);
@@ -702,7 +713,7 @@ export class Destruction {
     const other = ball === A ? B : A;
     if (ball && other && !isBall(other)) {
       this.dentBlock(other, ball, J);
-      this.callbacks.onImpact?.(speed);
+      this.callbacks.onImpact?.(speed, new THREE.Vector3(ball.body.translation().x, ball.body.translation().y, ball.body.translation().z));
     }
   }
 
