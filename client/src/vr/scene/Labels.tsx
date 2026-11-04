@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { BODY_HEIGHT, MAST_HEIGHT, VR_NODES, baseHeight } from "@/vr/data";
 import { canvasTexture, drawTextCanvas } from "@/vr/canvasText";
+import { noRaycast } from "./noRaycast";
 
 const GOLD = "#C8A97E";
 
@@ -35,7 +36,7 @@ function NodeLabel({
   const height = 1.5;
   const y = baseHeight(x, z, 2.2, 2.2) + BODY_HEIGHT + MAST_HEIGHT + 2.2;
   return (
-    <sprite position={[x, y, z]} scale={[height * aspect, height, 1]}>
+    <sprite position={[x, y, z]} scale={[height * aspect, height, 1]} raycast={noRaycast}>
       {/* depthTest off keeps labels readable through buildings */}
       <spriteMaterial map={texture} transparent depthTest={false} sizeAttenuation />
     </sprite>
@@ -73,6 +74,7 @@ export function SourceRing({ source }: { source: string }) {
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[n.x, baseHeight(n.x, n.z, 2.2, 2.2) + 0.12, n.z]}
+      raycast={noRaycast}
     >
       <ringGeometry args={[2.4, 2.9, 48]} />
       <meshBasicMaterial color={GOLD} side={THREE.DoubleSide} />

@@ -68,3 +68,22 @@ export function canvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
   t.generateMipmaps = false;
   return t;
 }
+
+/** Greedy word wrap of `text` to at most `maxPx` pixels wide. */
+export function wrapText(text: string, maxPx: number, fontPx = 28, font = FONT): string[] {
+  const g = document.createElement("canvas").getContext("2d")!;
+  g.font = `${fontPx}px ${font}`;
+  const out: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const test = line ? `${line} ${word}` : word;
+    if (g.measureText(test).width > maxPx && line) {
+      out.push(line);
+      line = word;
+    } else {
+      line = test;
+    }
+  }
+  if (line) out.push(line);
+  return out;
+}

@@ -2,6 +2,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { Physics } from "@react-three/rapier";
+import { XR, createXRStore } from "@react-three/xr";
 import * as THREE from "three";
 import { Link } from "wouter";
 import { SOURCE_DEFAULT, VR_NODES, buildBuildings, initialDeadNodes, type BuildingSpec } from "@/vr/data";
@@ -14,8 +15,17 @@ import { Links, Packets } from "@/vr/scene/Links";
 import { NodeLabels, SourceRing } from "@/vr/scene/Labels";
 import { DroneActor } from "@/vr/scene/DroneActor";
 import { DestructionLayer, type SimApi } from "@/vr/scene/DestructionLayer";
+import { CardboardRig } from "@/vr/scene/CardboardRig";
+import { TeleportTarget, VrRig } from "@/vr/scene/VrRig";
+import type { HudModel } from "@/vr/scene/WorldHud";
+import { requestGyroPermission } from "@/vr/gyro";
 
 type Mode = "destroy" | "source" | "shoot";
+/** desktop = mouse and orbit camera; cardboard = phone stereo view with gyroscope. */
+type View = "desktop" | "cardboard";
+
+/** Where the player starts: south of the map, looking north over it. */
+const START_VIEWPOINT: [number, number] = [0, 43];
 
 const GOLD = "#C8A97E";
 const PANEL = { background: "rgba(17,17,16,0.85)", border: "1px solid rgba(255,255,255,0.1)" };
@@ -36,11 +46,21 @@ export default function VrSimulation() {
   const [gravity, setGravity] = useState(DEFAULT_SETTINGS.gravity);
   const [intensity, setIntensity] = useState(DEFAULT_SETTINGS.quakeIntensity);
   const [sound, setSound] = useState(true);
+  const [view, setView] = useState<View>("desktop");
+  const [inVr, setInVr] = useState(false);
+  const [viewpoint, setViewpoint] = useState<[number, number]>(START_VIEWPOINT);
   const [log, setLog] = useState<string[]>([
     "Click a building to demolish it, or use Earthquake / Shoot.",
   ]);
 
   // ---- refs mirroring state, for callbacks that outlive a render ----------
+  // The XR store is created here, not at module level: creating it can inject a
+  // WebXR emulator on localhost, which must not happen on the other pages.
+  const xrStore = useMemo(() => createXRStore({ controller: { teleportPointer: true } }), []);
+  useEffect(() => {
+    return xrStore.subscribe((state) => setInVr(state.session != null));
+  }, [xrStore]);
+
   const settings = useRef<SimSettings>({ ...DEFAULT_SETTINGS });
   const apiRef = useRef<SimApi | null>(null);
   const shakeGroup = useRef<THREE.Group>(null);
@@ -158,7 +178,11 @@ export default function VrSimulation() {
 
     const id = e.object.userData?.buildingId as string | undefined;
     const spec = id ? buildBuildings().find((b) => b.id === id) : undefined;
-    if (!spec) return;
+    if (!spec) {
+      // Cardboard has no joystick: gazing at the ground and tapping moves you there.
+      if (view === "cardboard") setViewpoint([e.point.x, e.point.z]);
+      return;
+    }
 
     if (modeRef.current === "source") {
       if (!spec.nodeId) return;
@@ -209,6 +233,72 @@ export default function VrSimulation() {
     setLog(["Scene reset."]);
   }
 
+  async function enterVr() {
+    unlockAudio();
+    try {
+      await xrStore.enterVR();
+    } catch (err) {
+      console.error("enterVR failed", err);
+      pushLog(`Could not start a VR session here (${err instanceof Error ? err.message : "unknown error"}). Try Cardboard on a phone.`);
+    }
+  }
+
+  async function enterCardboard() {
+    unlockAudio();
+    const ok = await requestGyroPermission();
+    if (!ok) pushLog("Gyroscope not available: the view will not follow your head.");
+    setView("cardboard");
+    try {
+      await document.documentElement.requestFullscreen?.();
+      await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.("landscape");
+    } catch {
+      // fullscreen / orientation lock are best effort
+    }
+  }
+
+  function exitCardboard() {
+    setView("desktop");
+    if (document.fullscreenElement) void document.exitFullscreen();
+  }
+
+  const immersive = inVr || view === "cardboard";
+
+  const hud: HudModel = {
+    mode,
+    quaking,
+    slowMo,
+    droneOn,
+    sound,
+    gravity,
+    intensity,
+    infoLines: [
+      "SOS route",
+      `From: ${nodeName(source)}`,
+      route ? route.path.map(nodeName).join(" > ") : "No route to the gateway. Node is cut off.",
+      route ? `${route.hops} hops, cost ${route.totalDistance.toFixed(1)}` : "",
+      `Blocked links: ${blocked.size} | Drone: ${droneOn ? dronePhase : "off"}`,
+      `Nodes alive: ${VR_NODES.length - dead.size} / ${VR_NODES.length}`,
+    ].filter((l) => l !== ""),
+    logLines: log,
+    on: {
+      mode: setMode,
+      quake: startQuake,
+      slowMo: () => setSlowMo((v) => !v),
+      drone: () => setDroneOn((v) => !v),
+      gravity: (d) => setGravity((g) => Math.min(30, Math.max(1, Math.round((g + d) * 10) / 10))),
+      intensity: (d) => setIntensity((v) => Math.min(2.5, Math.max(0.5, Math.round((v + d) * 10) / 10))),
+      sound: () => {
+        unlockAudio();
+        setSound((v) => !v);
+      },
+      reset,
+      exit: () => {
+        if (view === "cardboard") exitCardboard();
+        else void xrStore.getState().session?.end();
+      },
+    },
+  };
+
   const modeLabel: Record<Mode, string> = {
     destroy: "Destroy / restore",
     source: "Set SOS source",
@@ -218,6 +308,7 @@ export default function VrSimulation() {
   return (
     <div className="relative h-screen w-screen" style={{ background: "#111110" }}>
       <Canvas camera={{ position: [0, 38, 62], fov: 55 }}>
+        <XR store={xrStore}>
         <color attach="background" args={["#111110"]} />
         <fog attach="fog" args={["#111110", 90, 190]} />
         <ambientLight intensity={0.55} />
@@ -225,7 +316,9 @@ export default function VrSimulation() {
 
         {/* Everything that shakes during a quake lives in this group. */}
         <group ref={shakeGroup} onClick={handleWorldClick}>
-          <Terrain />
+          <TeleportTarget onTeleport={(p) => setViewpoint([p.x, p.z])}>
+            <Terrain />
+          </TeleportTarget>
           <Suspense fallback={null}>
             {/* paused: we step the world ourselves (see DestructionLayer) */}
             <Physics paused gravity={[0, -DEFAULT_SETTINGS.gravity, 0]}>
@@ -256,16 +349,33 @@ export default function VrSimulation() {
           onPhase={handleDronePhase}
         />
 
-        <OrbitControls
-          target={[0, 0, 0]}
-          maxPolarAngle={Math.PI / 2.05}
-          minDistance={8}
-          maxDistance={120}
-        />
+        {!immersive && (
+          <OrbitControls
+            target={[0, 0, 0]}
+            maxPolarAngle={Math.PI / 2.05}
+            minDistance={8}
+            maxDistance={120}
+          />
+        )}
+
+        {/* Headset session (VR) and the HUD that lives in the world */}
+        <VrRig viewpoint={viewpoint} hud={hud} showHud={view === "cardboard"} />
+        {view === "cardboard" && <CardboardRig viewpoint={viewpoint} />}
+        </XR>
       </Canvas>
 
-      {/* HUD */}
-      <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4 text-sm text-[#e8e4da]">
+      {view === "cardboard" && (
+        <button
+          onClick={exitCardboard}
+          className="absolute left-1/2 top-2 -translate-x-1/2 rounded border px-3 py-1 text-xs text-[#e8e4da]"
+          style={{ ...PANEL }}
+        >
+          Exit Cardboard
+        </button>
+      )}
+
+      {/* DOM HUD (desktop only: a headset only shows the canvas) */}
+      {!immersive && <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4 text-sm text-[#e8e4da]">
         <div className="flex items-start justify-between gap-4">
           <div className="pointer-events-auto rounded-md p-3" style={PANEL}>
             <div className="mb-2 text-base font-medium" style={{ color: GOLD }}>
@@ -321,6 +431,20 @@ export default function VrSimulation() {
               </button>
               <button onClick={reset} className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 Reset
+              </button>
+              <button
+                onClick={enterVr}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: GOLD, color: GOLD }}
+              >
+                Enter VR
+              </button>
+              <button
+                onClick={enterCardboard}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: GOLD, color: GOLD }}
+              >
+                Cardboard
               </button>
               <Link href="/simulation" className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 2D view
@@ -390,7 +514,7 @@ export default function VrSimulation() {
             </div>
           ))}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

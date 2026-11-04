@@ -4,6 +4,7 @@ import { Line } from "@react-three/drei";
 import * as THREE from "three";
 import { VR_LINKS, VR_NODES, towerTop } from "@/vr/data";
 import { linkKey } from "@/vr/mesh";
+import { noRaycast } from "./noRaycast";
 
 const GOLD = "#C8A97E";
 const TEAL = "#3fb8af";
@@ -50,6 +51,7 @@ export function Links({
             dashSize={0.6}
             gapSize={0.6}
             transparent
+            raycast={noRaycast}
             opacity={highlighted ? 1 : usable ? 0.55 : isBlocked ? 0.75 : 0.25}
           />
         );
@@ -95,6 +97,7 @@ export function Packets({
           ref={(el) => {
             refs.current[i] = el;
           }}
+          raycast={noRaycast}
         >
           <sphereGeometry args={[0.45, 12, 12]} />
           <meshBasicMaterial color="#ffd58a" />
