@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Sky } from "@react-three/drei";
 import { Physics } from "@react-three/rapier";
 import { XR, createXRStore } from "@react-three/xr";
 import * as THREE from "three";
@@ -46,6 +46,13 @@ export default function VrSimulation() {
   const [gravity, setGravity] = useState(DEFAULT_SETTINGS.gravity);
   const [intensity, setIntensity] = useState(DEFAULT_SETTINGS.quakeIntensity);
   const [sound, setSound] = useState(true);
+  // Shadows are costly; skip them on phones (coarse pointer).
+  const highQuality = useMemo(
+    () => typeof window === "undefined" || !window.matchMedia("(pointer: coarse)").matches,
+    [],
+  );
+  const [demoCaption, setDemoCaption] = useState<string | null>(null);
+  const demoToken = useRef(0);
   const [view, setView] = useState<View>("desktop");
   const [inVr, setInVr] = useState(false);
   const [viewpoint, setViewpoint] = useState<[number, number]>(START_VIEWPOINT);
@@ -299,6 +306,48 @@ export default function VrSimulation() {
     },
   };
 
+  /** Scripted walk-through for presentations. Click "Stop demo" to cancel. */
+  async function runDemo() {
+    const token = ++demoToken.current;
+    const alive = () => demoToken.current === token;
+    const say = async (text: string, secs: number) => {
+      if (!alive()) return;
+      setDemoCaption(text);
+      await new Promise((r) => setTimeout(r, secs * 1000));
+    };
+    const tower = (nodeId: string) => buildBuildings().find((b) => b.nodeId === nodeId)!;
+    reset();
+    unlockAudio();
+    setMode("destroy");
+    await new Promise((r) => setTimeout(r, 800));
+    await say("1. The gold line is the SOS route from Peenya to the Cisco gateway, found by Dijkstra.", 5);
+    if (alive()) {
+      apiRef.current?.toggleBuilding("tower-hoskerehalli");
+    }
+    await say("2. Hoskerehalli Metro tower is destroyed. All its links go dead and the route heals around it.", 6);
+    if (alive()) {
+      const t = tower("vijayanagar");
+      for (let i = 0; i < 3 && alive(); i++) {
+        apiRef.current?.shoot(
+          new THREE.Vector3(t.x + 16, 6, t.z + 10),
+          new THREE.Vector3(t.x, 1.5, t.z),
+        );
+        await new Promise((r) => setTimeout(r, 900));
+      }
+    }
+    await say("3. Projectile hits: collision events, impact force, wall dents, joints breaking.", 6);
+    if (alive()) startQuake();
+    await say("4. Earthquake: ground shaking loads every joint. Weak buildings collapse, towers go offline.", 11);
+    await say("5. Blocked or broken links turn red. The relay drone flies in to bridge cut-off nodes.", 7);
+    await say("Demo finished. Try it yourself: Shoot, Earthquake, gravity slider, or Reset.", 4);
+    if (alive()) setDemoCaption(null);
+  }
+
+  function stopDemo() {
+    demoToken.current++;
+    setDemoCaption(null);
+  }
+
   const modeLabel: Record<Mode, string> = {
     destroy: "Destroy / restore",
     source: "Set SOS source",
@@ -307,12 +356,26 @@ export default function VrSimulation() {
 
   return (
     <div className="relative h-screen w-screen" style={{ background: "#111110" }}>
-      <Canvas camera={{ position: [0, 38, 62], fov: 55 }}>
+      <Canvas camera={{ position: [0, 38, 62], fov: 55 }} shadows={highQuality} dpr={[1, 2]}>
         <XR store={xrStore}>
-        <color attach="background" args={["#111110"]} />
-        <fog attach="fog" args={["#111110", 90, 190]} />
-        <ambientLight intensity={0.55} />
-        <directionalLight position={[30, 50, 20]} intensity={1.1} />
+        {/* Dusk sky: a procedural sky shader, no image files */}
+        <Sky distance={4500} sunPosition={[60, 16, -70]} turbidity={7} rayleigh={1.6} mieCoefficient={0.006} mieDirectionalG={0.85} />
+        <fog attach="fog" args={["#b9a99a", 80, 210]} />
+        <hemisphereLight args={["#bcd0ff", "#4a4036", 0.6]} />
+        <directionalLight
+          position={[45, 40, 30]}
+          intensity={1.7}
+          color="#ffd9b0"
+          castShadow={highQuality}
+          shadow-mapSize={[2048, 2048]}
+          shadow-camera-left={-55}
+          shadow-camera-right={55}
+          shadow-camera-top={55}
+          shadow-camera-bottom={-55}
+          shadow-camera-near={10}
+          shadow-camera-far={140}
+          shadow-bias={-0.0004}
+        />
 
         {/* Everything that shakes during a quake lives in this group. */}
         <group ref={shakeGroup} onClick={handleWorldClick}>
@@ -355,6 +418,8 @@ export default function VrSimulation() {
             maxPolarAngle={Math.PI / 2.05}
             minDistance={8}
             maxDistance={120}
+            autoRotate={demoCaption !== null}
+            autoRotateSpeed={0.6}
           />
         )}
 
@@ -372,6 +437,15 @@ export default function VrSimulation() {
         >
           Exit Cardboard
         </button>
+      )}
+
+      {demoCaption && !immersive && (
+        <div
+          className="pointer-events-none absolute bottom-44 left-1/2 w-[34rem] max-w-[90vw] -translate-x-1/2 rounded-md px-4 py-3 text-center text-base text-[#e8e4da]"
+          style={PANEL}
+        >
+          {demoCaption}
+        </div>
       )}
 
       {/* DOM HUD (desktop only: a headset only shows the canvas) */}
@@ -431,6 +505,13 @@ export default function VrSimulation() {
               </button>
               <button onClick={reset} className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 Reset
+              </button>
+              <button
+                onClick={demoCaption ? stopDemo : runDemo}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: "#8ad0ff", color: "#8ad0ff" }}
+              >
+                {demoCaption ? "Stop demo" : "Run demo"}
               </button>
               <button
                 onClick={enterVr}

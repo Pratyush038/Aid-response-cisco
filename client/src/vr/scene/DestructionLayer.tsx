@@ -7,6 +7,7 @@ import { buildBuildings, type BuildingSpec } from "@/vr/data";
 import { computeBlockedLinks } from "@/vr/los";
 import { QUAKE_DURATION, groundAccel, groundOffset } from "@/vr/quake";
 import type { SimSettings } from "@/vr/settings";
+import { Dust, type DustApi } from "./Dust";
 
 /** Control surface the page uses to drive the physics scene. */
 export interface SimApi {
@@ -47,6 +48,7 @@ export function DestructionLayer(props: Props) {
   const live = useRef(props);
   live.current = props;
 
+  const dust = useRef<DustApi>(null);
   const quake = useRef({ active: false, t: 0 });
   const acc = useRef(0);
   const losTimer = useRef(0);
@@ -55,7 +57,13 @@ export function DestructionLayer(props: Props) {
   useEffect(() => {
     const d = new Destruction(rapier, world, buildBuildings());
     d.callbacks = {
-      onCollapse: (b: Building) => live.current.onCollapse(b.spec),
+      onCollapse: (b: Building) => {
+        dust.current?.burst(
+          new THREE.Vector3(b.spec.x, b.blocks[0].home.y + b.spec.h * 0.3, b.spec.z),
+          b.spec.kind === "scenery" ? 40 : 90,
+        );
+        live.current.onCollapse(b.spec);
+      },
       onImpact: (speed) => live.current.onImpact(speed),
     };
     setSim(d);
@@ -163,5 +171,10 @@ export function DestructionLayer(props: Props) {
     }
   });
 
-  return sim ? <primitive object={sim.group} /> : null;
+  return (
+    <>
+      {sim && <primitive object={sim.group} />}
+      <Dust ref={dust} settings={props.settings} />
+    </>
+  );
 }

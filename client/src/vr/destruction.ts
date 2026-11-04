@@ -49,6 +49,7 @@ import {
   type BuildingSpec,
 } from "./data";
 import { applyDent, dentDepth } from "./dent";
+import { buildingTextures, softDot } from "./textures";
 
 type Rapier = typeof import("@dimforge/rapier3d-compat").default;
 
@@ -162,6 +163,7 @@ export class Destruction {
   private dirty = new Set<Building>();
   private brokenThisStep = 0;
   private lamps = new Map<string, THREE.MeshStandardMaterial>();
+  private halos = new Map<string, THREE.SpriteMaterial>();
   private rand = mulberry32(777);
   private tmp = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
@@ -238,7 +240,7 @@ export class Destruction {
       spec.kind === "tower" ? 1.0 + 1.5 * rand() : spec.kind === "landmark" ? 0.85 : 0.7 + 0.8 * rand();
 
     const color =
-      spec.kind === "tower" ? "#b8b4aa" : spec.kind === "landmark" ? "#8a8f98" : "#6d6a63";
+      spec.kind === "tower" ? "#f2eee4" : spec.kind === "landmark" ? "#aeb8c8" : "#d8cdbd";
 
     // grid[layer][ix][iz]
     const grid: Block[][][] = [];
@@ -250,8 +252,15 @@ export class Destruction {
           const cx = spec.x - spec.w / 2 + bw * (ix + 0.5);
           const cy = baseY + bh * (ly + 0.5);
           const cz = spec.z - spec.d / 2 + bd * (iz + 0.5);
+          const tex = buildingTextures();
           const mat = new THREE.MeshStandardMaterial({
-            color: new THREE.Color(color).offsetHSL(0, 0, (rand() - 0.5) * 0.06),
+            // colour multiplies the window texture: it tints each building
+            color: new THREE.Color(color).offsetHSL(0, 0, (rand() - 0.5) * 0.08),
+            map: tex.map,
+            emissiveMap: tex.emissive,
+            emissive: new THREE.Color("#ffffff"),
+            emissiveIntensity: 0.9,
+            roughness: 0.85,
           });
           const geo = new THREE.BoxGeometry(bw, bh, bd, SEGMENTS, SEGMENTS, SEGMENTS);
           const blk = this.makeBlock(building, ly, half, new THREE.Vector3(cx, cy, cz), geo, mat, false);
@@ -365,6 +374,17 @@ export class Destruction {
       const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.38, 16, 16), lampMat);
       lamp.position.set(0, MAST_HEIGHT / 2, 0);
       mast.mesh.add(lamp);
+      const dot = softDot();
+      if (dot) {
+        // additive halo around the lamp: cheap "bloom"
+        const halo = new THREE.Sprite(
+          new THREE.SpriteMaterial({ map: dot, color: "#6cf08a", blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }),
+        );
+        halo.scale.set(3.2, 3.2, 1);
+        halo.raycast = () => null;
+        lamp.add(halo);
+        this.halos.set(spec.nodeId ?? "", halo.material as THREE.SpriteMaterial);
+      }
       if (spec.nodeId) this.lamps.set(spec.nodeId, lampMat);
       const topBlock = grid[spec.ny - 1][0][0];
       addJoint(
@@ -381,8 +401,9 @@ export class Destruction {
     // Visual foundation slab (not physical), hides the gap under the footing.
     const slab = new THREE.Mesh(
       new THREE.BoxGeometry(spec.w + 0.15, 1.2, spec.d + 0.15),
-      new THREE.MeshStandardMaterial({ color: "#4d4a45" }),
+      new THREE.MeshStandardMaterial({ color: "#6b665e" }),
     );
+    slab.receiveShadow = true;
     slab.position.set(spec.x, baseY - 0.6 + 0.02, spec.z);
     this.group.add(slab);
   }
@@ -419,6 +440,8 @@ export class Destruction {
     );
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.copy(center);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     const block: Block = {
       id: this.blocks.length,
       building,
@@ -474,6 +497,7 @@ export class Destruction {
     m.color.set(c);
     m.emissive.set(c);
     m.emissiveIntensity = lit ? 1.2 : 0.35;
+    this.halos.get(nodeId)?.color.set(c);
   }
 
   /** Break every joint of a building and shove the blocks outwards. */
