@@ -44,7 +44,6 @@ export default function VrSimulation() {
   const [dronePhase, setDronePhase] = useState<DronePhase>("patrol");
   const [droneOn, setDroneOn] = useState(true);
   const [syncOn, setSyncOn] = useState(false);
-  const [night, setNight] = useState(false);
   const [quaking, setQuaking] = useState(false);
   const [slowMo, setSlowMo] = useState(false);
   const [gravity, setGravity] = useState(DEFAULT_SETTINGS.gravity);
@@ -487,20 +486,13 @@ export default function VrSimulation() {
       <Canvas camera={{ position: [0, 38, 62], fov: 55 }} shadows={highQuality} dpr={[1, 2]}>
         <XR store={xrStore}>
         {/* Dusk sky: a procedural sky shader, no image files */}
-        <Sky
-          distance={4500}
-          sunPosition={night ? [60, -8, -70] : [60, 16, -70]}
-          turbidity={night ? 2 : 7}
-          rayleigh={night ? 0.2 : 1.6}
-          mieCoefficient={0.006}
-          mieDirectionalG={0.85}
-        />
-        <fog attach="fog" args={night ? ["#0b1020", 60, 190] : ["#b9a99a", 80, 210]} />
-        <hemisphereLight args={night ? ["#3a4a7a", "#10141c", 0.35] : ["#bcd0ff", "#4a4036", 0.6]} />
+        <Sky distance={4500} sunPosition={[60, 16, -70]} turbidity={7} rayleigh={1.6} mieCoefficient={0.006} mieDirectionalG={0.85} />
+        <fog attach="fog" args={["#b9a99a", 80, 210]} />
+        <hemisphereLight args={["#bcd0ff", "#4a4036", 0.6]} />
         <directionalLight
           position={[45, 40, 30]}
-          intensity={night ? 0.45 : 1.7}
-          color={night ? "#8fa8ff" : "#ffd9b0"}
+          intensity={1.7}
+          color="#ffd9b0"
           castShadow={highQuality}
           shadow-mapSize={[2048, 2048]}
           shadow-camera-left={-55}
@@ -523,7 +515,6 @@ export default function VrSimulation() {
               <DestructionLayer
                 settings={settings}
                 dead={dead}
-                night={night}
                 shakeGroup={shakeGroup}
                 apiRef={apiRef}
                 onCollapse={handleCollapse}
@@ -642,13 +633,6 @@ export default function VrSimulation() {
               </button>
               <button onClick={() => reset()} className="rounded border px-2 py-1" style={{ borderColor: "rgba(255,255,255,0.2)" }}>
                 Reset
-              </button>
-              <button
-                onClick={() => setNight((v) => !v)}
-                className="rounded border px-2 py-1"
-                style={{ borderColor: night ? GOLD : "rgba(255,255,255,0.2)", color: night ? GOLD : undefined }}
-              >
-                Night
               </button>
               <button
                 onClick={demoCaption ? stopDemo : runDemo}

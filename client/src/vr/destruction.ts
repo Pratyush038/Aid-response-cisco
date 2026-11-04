@@ -239,8 +239,17 @@ export class Destruction {
     const strength =
       spec.kind === "tower" ? 1.0 + 1.5 * rand() : spec.kind === "landmark" ? 0.85 : 0.7 + 0.8 * rand();
 
+    // Colour multiplies the wall texture. Houses get a pastel colour per
+    // building; other styles keep the colours drawn in the texture.
+    const PASTELS = ["#ffd9c0", "#cfe5ff", "#ffe9a8", "#d9f0c8", "#f5c6d6", "#e4d4f4"];
     const color =
-      spec.kind === "tower" ? "#f2eee4" : spec.kind === "landmark" ? "#aeb8c8" : "#d8cdbd";
+      spec.kind === "tower"
+        ? "#f2eee4"
+        : spec.kind === "landmark"
+          ? "#aeb8c8"
+          : spec.style === "residential"
+            ? PASTELS[Math.floor((spec.variant ?? 0) * PASTELS.length)]
+            : "#ffffff";
 
     // grid[layer][ix][iz]
     const grid: Block[][][] = [];
@@ -252,7 +261,7 @@ export class Destruction {
           const cx = spec.x - spec.w / 2 + bw * (ix + 0.5);
           const cy = baseY + bh * (ly + 0.5);
           const cz = spec.z - spec.d / 2 + bd * (iz + 0.5);
-          const tex = buildingTextures();
+          const tex = buildingTextures(spec.style ?? "tower");
           const mat = new THREE.MeshStandardMaterial({
             // colour multiplies the window texture: it tints each building
             color: new THREE.Color(color).offsetHSL(0, 0, (rand() - 0.5) * 0.08),
@@ -358,6 +367,8 @@ export class Destruction {
       }
     }
 
+    this.addRoofs(spec, grid, half);
+
     // Antenna mast on node towers: one more block, fixed to the inner top
     // corner of block (0,0) of the top layer, i.e. the centre of the roof.
     if (spec.kind === "tower") {
@@ -406,6 +417,79 @@ export class Destruction {
     slab.receiveShadow = true;
     slab.position.set(spec.x, baseY - 0.6 + 0.02, spec.z);
     this.group.add(slab);
+  }
+
+  /**
+   * Roof details, parented to the top-layer block meshes so they fall with
+   * the building. They are decoration only: not part of the physics or of the
+   * line-of-sight test.
+   */
+  private addRoofs(spec: BuildingSpec, grid: Block[][][], half: THREE.Vector3) {
+    if (spec.kind !== "scenery") return;
+    const top = grid[spec.ny - 1];
+    const v = spec.variant ?? 0;
+    const add = (blk: Block, mesh: THREE.Mesh) => {
+      mesh.castShadow = true;
+      mesh.userData = blk.mesh.userData; // clicks on the roof select the building
+      blk.mesh.add(mesh);
+    };
+    for (let ix = 0; ix < spec.nx; ix++) {
+      for (let iz = 0; iz < spec.nz; iz++) {
+        const blk = top[ix][iz];
+        if (spec.style === "residential") {
+          // pitched (pyramid) roof on each top block
+          const h = 0.55 + 0.2 * v;
+          const roof = new THREE.Mesh(
+            new THREE.ConeGeometry(Math.hypot(half.x, half.z) * 1.08, h, 4),
+            new THREE.MeshStandardMaterial({ color: v > 0.5 ? "#8a4b3a" : "#5b6b7a", roughness: 0.9 }),
+          );
+          roof.rotation.y = Math.PI / 4;
+          roof.position.y = half.y + h / 2;
+          add(blk, roof);
+        } else if (spec.style === "industrial" && ix === 0 && iz === 0) {
+          // roof vents
+          for (const dx of [-0.35, 0.35]) {
+            const vent = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.18, 0.18, 0.45, 8),
+              new THREE.MeshStandardMaterial({ color: "#7d848c", metalness: 0.6, roughness: 0.4 }),
+            );
+            vent.position.set(dx, half.y + 0.22, 0);
+            add(blk, vent);
+          }
+        } else if (spec.style === "commercial" && ix === 0 && iz === 0) {
+          // rooftop machinery box and antenna
+          const box = new THREE.Mesh(
+            new THREE.BoxGeometry(half.x * 1.1, 0.4, half.z * 1.1),
+            new THREE.MeshStandardMaterial({ color: "#6e7a86" }),
+          );
+          box.position.y = half.y + 0.2;
+          add(blk, box);
+          const ant = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6),
+            new THREE.MeshStandardMaterial({ color: "#c0c4c8" }),
+          );
+          ant.position.y = half.y + 0.85;
+          add(blk, ant);
+        } else if (spec.style === "civic" && ix === 0 && iz === 0) {
+          // red cross on the hospital roof
+          const mat = new THREE.MeshStandardMaterial({ color: "#d93a30", emissive: "#d93a30", emissiveIntensity: 0.5 });
+          const a = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.08, 0.3), mat);
+          const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.9), mat);
+          a.position.set(half.x, half.y + 0.05, half.z);
+          b.position.copy(a.position);
+          add(blk, a);
+          add(blk, b);
+        } else if (spec.style === "campus" && ix === 0 && iz === 0) {
+          // clock tower stub
+          const t = new THREE.Mesh(
+            new THREE.BoxGeometry(0.5, 0.9, 0.5),
+            new THREE.MeshStandardMaterial({ color: "#8c4d3a" }),
+          );
+          t.position.set(half.x, half.y + 0.45, half.z);
+          add(blk, t);
+        }
+      }
+    }
   }
 
   private makeBlock(
@@ -487,14 +571,6 @@ export class Destruction {
 
   getBuilding(id: string): Building | undefined {
     return this.buildings.find((b) => b.spec.id === id);
-  }
-
-  /** Night mode: windows glow much brighter. */
-  setNight(on: boolean) {
-    for (const b of this.blocks) {
-      const m = b.mesh.material as THREE.MeshStandardMaterial;
-      if (!b.isMast) m.emissiveIntensity = on ? 2.6 : 0.9;
-    }
   }
 
   /** Light or darken the antenna lamp of a node. */

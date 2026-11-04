@@ -136,6 +136,34 @@ export function mulberry32(seed: number): () => number {
 
 export type BuildingKind = "tower" | "landmark" | "scenery";
 
+/** Look of the scenery around a node: depends on the neighbourhood. */
+export type BuildingStyle = "industrial" | "residential" | "commercial" | "civic" | "campus";
+
+const ZONE: Record<string, BuildingStyle> = {
+  peenya: "industrial",
+  "nandini-layout": "industrial",
+  kengeri: "residential",
+  rajarajeshwari: "residential",
+  "mysore-road": "residential",
+  banashankari: "residential",
+  jayanagar: "residential",
+  hoskerehalli: "commercial",
+  vijayanagar: "commercial",
+  "cisco-gateway": "commercial",
+  "magadi-road": "civic", // hospital
+  user: "campus",
+  "rv-gate": "campus",
+};
+
+/** [min width, width range, min height, height range] per style. */
+const STYLE_SIZE: Record<BuildingStyle, [number, number, number, number]> = {
+  industrial: [2.2, 1.2, 1.6, 1.0],
+  residential: [1.4, 0.8, 1.8, 1.4],
+  commercial: [1.4, 0.8, 3.2, 3.2],
+  civic: [2.4, 1.0, 2.4, 1.2],
+  campus: [2.2, 1.0, 1.8, 1.2],
+};
+
 /**
  * A building is a box footprint split into an nx x ny x nz grid of blocks.
  * The split is fixed here, at data time: there is no runtime fracturing.
@@ -153,6 +181,9 @@ export interface BuildingSpec {
   nx: number;
   ny: number;
   nz: number;
+  style?: BuildingStyle;
+  /** Random number in [0,1) fixed per building, for colour and roof choices. */
+  variant?: number;
 }
 
 /**
@@ -218,13 +249,15 @@ export function buildBuildings(): BuildingSpec[] {
   // pushed apart violently by the physics engine.
   VR_NODES.forEach((node, i) => {
     const rand = mulberry32(1000 + i);
+    const style = ZONE[node.nodeId] ?? "residential";
+    const [w0, wr, h0, hr] = STYLE_SIZE[style];
     for (let k = 0; k < 5; k++) {
       for (let attempt = 0; attempt < 12; attempt++) {
         const angle = rand() * Math.PI * 2;
-        const radius = 3.5 + rand() * 3.5;
-        const w = 1.4 + rand() * 1.4;
-        const d = 1.4 + rand() * 1.4;
-        const h = 2 + rand() * 3.4;
+        const radius = 3.8 + rand() * 3.5;
+        const w = w0 + rand() * wr;
+        const d = w0 + rand() * wr;
+        const h = h0 + rand() * hr;
         const cand: BuildingSpec = {
           id: `scenery-${i}-${k}`,
           kind: "scenery",
@@ -236,6 +269,8 @@ export function buildBuildings(): BuildingSpec[] {
           nx: 2,
           ny: Math.max(2, Math.round(h / 1.3)),
           nz: 2,
+          style,
+          variant: rand(),
         };
         if (!out.some((o) => overlaps(cand, o, 0.6))) {
           out.push(cand);
