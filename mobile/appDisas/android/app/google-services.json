@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "985070185196",
+    "project_id": "aid-response-app",
+    "storage_bucket": "aid-response-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:985070185196:android:6d968b95663d804c6dd3c9",
+        "android_client_info": {
+          "package_name": "com.aidresponse.aid_response"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCTTXZEU43GwrXs40vvd7xP2Dk1SiniNbc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
