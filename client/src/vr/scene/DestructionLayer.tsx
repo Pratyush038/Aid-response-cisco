@@ -28,6 +28,7 @@ export interface SimApi {
 interface Props {
   settings: React.MutableRefObject<SimSettings>;
   dead: ReadonlySet<string>;
+  night: boolean;
   /** Group that is shaken during a quake; also the parent of the blocks. */
   shakeGroup: React.RefObject<THREE.Group>;
   apiRef: React.MutableRefObject<SimApi | null>;
@@ -85,6 +86,10 @@ export function DestructionLayer(props: Props) {
       if (b.spec.nodeId) sim.setNodeLit(b.spec.nodeId, !props.dead.has(b.spec.nodeId));
     }
   }, [sim, props.dead]);
+
+  useEffect(() => {
+    sim?.setNight(props.night);
+  }, [sim, props.night]);
 
   // The control surface for the page.
   useEffect(() => {

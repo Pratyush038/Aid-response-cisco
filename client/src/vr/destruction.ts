@@ -489,6 +489,14 @@ export class Destruction {
     return this.buildings.find((b) => b.spec.id === id);
   }
 
+  /** Night mode: windows glow much brighter. */
+  setNight(on: boolean) {
+    for (const b of this.blocks) {
+      const m = b.mesh.material as THREE.MeshStandardMaterial;
+      if (!b.isMast) m.emissiveIntensity = on ? 2.6 : 0.9;
+    }
+  }
+
   /** Light or darken the antenna lamp of a node. */
   setNodeLit(nodeId: string, lit: boolean) {
     const m = this.lamps.get(nodeId);
